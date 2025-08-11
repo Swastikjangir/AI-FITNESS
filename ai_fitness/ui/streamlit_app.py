@@ -5,6 +5,14 @@ This module provides the main user interface for the fitness coaching
 application with real-time pose detection and workout analysis.
 """
 
+# Ensure project root is on sys.path for module imports when launched via Streamlit
+import sys
+from pathlib import Path
+_this_file = Path(__file__).resolve()
+_project_root = _this_file.parents[2]
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 import streamlit as st
 import cv2
 import mediapipe as mp

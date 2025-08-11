@@ -10,10 +10,8 @@ __author__ = "AI Fitness Team"
 
 from .core.ai_analyzer import AIAnalyzer
 from .core.workout_analytics import WorkoutAnalytics
-from .ui.streamlit_app import main
 
 __all__ = [
     "AIAnalyzer",
-    "WorkoutAnalytics", 
-    "main"
+    "WorkoutAnalytics"
 ]

@@ -6,9 +6,6 @@ Test script to verify the Streamlit app can be imported and run without errors
 import sys
 import os
 
-# Add the Ai_fitness directory to the path
-sys.path.append(os.path.join(os.path.dirname(__file__), 'Ai_fitness'))
-
 def test_imports():
     """Test if all required modules can be imported"""
     try:
@@ -30,11 +27,11 @@ def test_imports():
         import plotly.express as px
         print("✓ Plotly imported successfully")
         
-        from workout_analytics import WorkoutAnalytics
+        from ai_fitness.core.workout_analytics import WorkoutAnalytics
         print("✓ WorkoutAnalytics imported successfully")
         
         # Test importing the main app
-        import streamlit_app
+        from ai_fitness.ui import streamlit_app
         print("✓ Main app imported successfully")
         
         return True
@@ -87,7 +84,7 @@ def test_session_state():
 def test_workout_analytics():
     """Test WorkoutAnalytics functionality"""
     try:
-        from workout_analytics import WorkoutAnalytics
+        from ai_fitness.core.workout_analytics import WorkoutAnalytics
         
         analytics = WorkoutAnalytics()
         print("✓ WorkoutAnalytics instantiated successfully")
@@ -97,7 +94,7 @@ def test_workout_analytics():
         print(f"✓ Daily summary test passed (empty: {daily_summary.empty})")
         
         # Test FitnessCoach instantiation
-        from streamlit_app import FitnessCoach
+        from ai_fitness.ui.streamlit_app import FitnessCoach
         coach = FitnessCoach()
         print("✓ FitnessCoach instantiated successfully")
         
