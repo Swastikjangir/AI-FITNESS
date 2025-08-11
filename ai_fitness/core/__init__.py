@@ -1,16 +1,18 @@
 """
 Core business logic package for AI Fitness Coach.
 
-Contains the main business logic components including AI analysis,
-workout analytics, and data processing.
-"""
+Lightweight package initialization: we intentionally avoid importing heavy
+submodules here (e.g., ones that depend on OpenCV/MediaPipe) to keep
+`import ai_fitness.core` safe in constrained environments (such as
+Streamlit Cloud). Import submodules explicitly where needed, e.g.:
 
-from .ai_analyzer import AIAnalyzer
-from .workout_analytics import WorkoutAnalytics
-from .data_processing import DataProcessor
+    from ai_fitness.core.workout_analytics import WorkoutAnalytics
+    from ai_fitness.core.ai_analyzer import AIAnalyzer
+    from ai_fitness.core.data_processing import DataProcessor
+"""
 
 __all__ = [
     "AIAnalyzer",
     "WorkoutAnalytics",
-    "DataProcessor"
+    "DataProcessor",
 ]

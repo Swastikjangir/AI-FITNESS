@@ -1,13 +1,35 @@
 """
 AI Analyzer module for AI Fitness Coach.
 
-This module provides AI-powered physique analysis, workout generation,
-and fitness recommendations using computer vision and pose detection.
+Provides AI-powered physique analysis, workout generation, and fitness
+recommendations. This module is resilient to environments where optional
+native dependencies (OpenCV/MediaPipe) are unavailable (e.g., Streamlit Cloud).
 """
 
-import cv2
+# Optional native dependencies
+try:
+    import cv2  # type: ignore
+    OPENCV_AVAILABLE = True
+    CV2_IMPORT_ERROR = ""
+except Exception as _e:  # pragma: no cover
+    OPENCV_AVAILABLE = False
+    CV2_IMPORT_ERROR = str(_e)
+
+if OPENCV_AVAILABLE:
+    try:
+        import mediapipe as mp  # type: ignore
+        MEDIAPIPE_AVAILABLE = True
+        MP_IMPORT_ERROR = ""
+    except Exception as _e:  # pragma: no cover
+        MEDIAPIPE_AVAILABLE = False
+        MP_IMPORT_ERROR = str(_e)
+        mp = None  # type: ignore
+else:
+    MEDIAPIPE_AVAILABLE = False
+    MP_IMPORT_ERROR = "OpenCV not available; skipping MediaPipe import"
+    mp = None  # type: ignore
+
 import numpy as np
-import mediapipe as mp
 from typing import Dict, List, Tuple, Optional
 import json
 import os
@@ -21,7 +43,17 @@ class PhysiqueAnalyzer:
     def __init__(self, performance_mode: str = "balanced"):
         self.settings = get_settings()
         self.performance_mode = performance_mode
+        self.pose = None
         
+        # Initialize only if dependencies available
+        if not (OPENCV_AVAILABLE and MEDIAPIPE_AVAILABLE and mp is not None):
+            print(
+                "PhysiqueAnalyzer running in degraded mode: OpenCV/MediaPipe unavailable. "
+                f"cv2_ok={OPENCV_AVAILABLE}, mp_ok={MEDIAPIPE_AVAILABLE}"
+            )
+            self.mp_pose = None
+            return
+
         # Configure MediaPipe based on performance mode
         if performance_mode == "fast":
             model_complexity = 0  # Lightweight model
@@ -38,13 +70,13 @@ class PhysiqueAnalyzer:
         
         self.mp_pose = mp.solutions.pose
         self.pose = self.mp_pose.Pose(
-            static_image_mode=False,  # Changed to False for real-time processing
+            static_image_mode=False,
             model_complexity=model_complexity,
-            enable_segmentation=False,  # Disabled for performance
+            enable_segmentation=False,
             min_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
-            smooth_landmarks=True,  # Enable smoothing for better tracking
-            smooth_segmentation=False  # Disabled for performance
+            smooth_landmarks=True,
+            smooth_segmentation=False
         )
         
         # Body composition estimation parameters
@@ -69,14 +101,23 @@ class PhysiqueAnalyzer:
     def analyze_physique(self, image: np.ndarray) -> Dict:
         """Analyze physique from image and return body composition data"""
         try:
+            if not (OPENCV_AVAILABLE and MEDIAPIPE_AVAILABLE and self.pose is not None):
+                return {
+                    'error': 'AI analysis is unavailable in this environment (missing OpenCV/MediaPipe).',
+                    'cv2_available': OPENCV_AVAILABLE,
+                    'mediapipe_available': MEDIAPIPE_AVAILABLE,
+                    'cv2_error': CV2_IMPORT_ERROR,
+                    'mediapipe_error': MP_IMPORT_ERROR,
+                }
             # Resize image for performance if needed
-            if self.performance_mode == "fast" and (image.shape[1] > 480 or image.shape[0] > 360):
-                image = cv2.resize(image, (480, 360), interpolation=cv2.INTER_NEAREST)
-            elif self.performance_mode == "balanced" and (image.shape[1] > 640 or image.shape[0] > 480):
-                image = cv2.resize(image, (640, 480), interpolation=cv2.INTER_NEAREST)
+            if OPENCV_AVAILABLE:
+                if self.performance_mode == "fast" and (image.shape[1] > 480 or image.shape[0] > 360):
+                    image = cv2.resize(image, (480, 360), interpolation=cv2.INTER_NEAREST)
+                elif self.performance_mode == "balanced" and (image.shape[1] > 640 or image.shape[0] > 480):
+                    image = cv2.resize(image, (640, 480), interpolation=cv2.INTER_NEAREST)
             
             # Convert to RGB for MediaPipe
-            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB) if OPENCV_AVAILABLE else image
             results = self.pose.process(image_rgb)
             
             if not results.pose_landmarks:
