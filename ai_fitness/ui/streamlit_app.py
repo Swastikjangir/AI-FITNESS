@@ -22,7 +22,20 @@ try:
 except Exception as _e:  # pragma: no cover
     OPENCV_AVAILABLE = False
     CV2_IMPORT_ERROR = str(_e)
-import mediapipe as mp
+# Import MediaPipe only if OpenCV is available; mediapipe imports cv2 internally
+if OPENCV_AVAILABLE:
+    try:
+        import mediapipe as mp  # type: ignore
+        MEDIAPIPE_AVAILABLE = True
+        MP_IMPORT_ERROR = ""
+    except Exception as _e:  # pragma: no cover
+        MEDIAPIPE_AVAILABLE = False
+        MP_IMPORT_ERROR = str(_e)
+        mp = None  # type: ignore
+else:
+    MEDIAPIPE_AVAILABLE = False
+    MP_IMPORT_ERROR = "OpenCV not available; skipping MediaPipe import"
+    mp = None  # type: ignore
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -98,8 +111,8 @@ class FitnessCoach:
     
     def __init__(self):
         self.settings = get_settings()
-        self.mp_drawing = mp.solutions.drawing_utils
-        self.mp_pose = mp.solutions.pose
+        self.mp_drawing = mp.solutions.drawing_utils if MEDIAPIPE_AVAILABLE else None
+        self.mp_pose = mp.solutions.pose if MEDIAPIPE_AVAILABLE else None
         
         # Performance mode selection
         self.performance_mode = st.session_state.get('performance_mode', 'balanced')
@@ -132,6 +145,9 @@ class FitnessCoach:
     
     def _setup_pose_detection(self):
         """Setup pose detection based on performance mode"""
+        if not MEDIAPIPE_AVAILABLE or self.mp_pose is None:
+            self.pose = None
+            return
         if self.performance_mode == "fast":
             min_detection_confidence = 0.5
             min_tracking_confidence = 0.5
@@ -248,16 +264,17 @@ class FitnessCoach:
         """Detect pose in the frame and track exercises"""
         try:
             # Convert to RGB for MediaPipe
-            if not OPENCV_AVAILABLE:
+            if not OPENCV_AVAILABLE or not MEDIAPIPE_AVAILABLE or self.pose is None:
                 return
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.pose.process(frame_rgb)
             
             if results.pose_landmarks:
                 # Draw pose landmarks
-                self.mp_drawing.draw_landmarks(
-                    frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS
-                )
+                if self.mp_drawing and self.mp_pose:
+                    self.mp_drawing.draw_landmarks(
+                        frame, results.pose_landmarks, self.mp_pose.POSE_CONNECTIONS
+                    )
                 
                 # Track push-ups
                 self._track_pushups(results.pose_landmarks, frame)
@@ -272,6 +289,8 @@ class FitnessCoach:
         """Track push-up repetitions"""
         try:
             # Get relevant landmarks
+            if not MEDIAPIPE_AVAILABLE or self.mp_pose is None:
+                return
             left_shoulder = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_SHOULDER]
             left_elbow = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ELBOW]
             left_wrist = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_WRIST]
@@ -317,6 +336,8 @@ class FitnessCoach:
         """Track squat repetitions"""
         try:
             # Get relevant landmarks
+            if not MEDIAPIPE_AVAILABLE or self.mp_pose is None:
+                return
             left_hip = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_HIP]
             left_knee = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_KNEE]
             left_ankle = landmarks.landmark[self.mp_pose.PoseLandmark.LEFT_ANKLE]
