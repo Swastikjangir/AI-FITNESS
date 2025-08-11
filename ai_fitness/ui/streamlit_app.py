@@ -14,7 +14,14 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 import streamlit as st
-import cv2
+# Try to import OpenCV; gracefully degrade on platforms without cv2 support (e.g., Streamlit Cloud)
+try:
+    import cv2  # type: ignore
+    OPENCV_AVAILABLE = True
+    CV2_IMPORT_ERROR = ""
+except Exception as _e:  # pragma: no cover
+    OPENCV_AVAILABLE = False
+    CV2_IMPORT_ERROR = str(_e)
 import mediapipe as mp
 import numpy as np
 import pandas as pd
@@ -30,7 +37,6 @@ from typing import Dict, Any
 
 from ai_fitness.core.workout_analytics import WorkoutAnalytics
 from ai_fitness.core.ai_analyzer import PhysiqueAnalyzer, WorkoutGenerator
-from ai_fitness.services.camera_service import CameraService
 from ai_fitness.config.settings import get_settings
 
 # Page configuration
@@ -201,6 +207,12 @@ class FitnessCoach:
     def start_camera(self):
         """Start optimized camera service for pose detection"""
         try:
+            if not OPENCV_AVAILABLE:
+                st.error("OpenCV (cv2) is not available in this environment. Live camera is disabled.\n" \
+                         f"Import error: {CV2_IMPORT_ERROR}")
+                return False
+            # Import lazily here to avoid import errors during app startup on cloud
+            from ai_fitness.services.camera_service import CameraService
             if self.camera_service is None:
                 # Initialize camera service with current performance mode
                 self.camera_service = CameraService(performance_mode=self.performance_mode)
@@ -236,6 +248,8 @@ class FitnessCoach:
         """Detect pose in the frame and track exercises"""
         try:
             # Convert to RGB for MediaPipe
+            if not OPENCV_AVAILABLE:
+                return
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = self.pose.process(frame_rgb)
             
@@ -291,6 +305,8 @@ class FitnessCoach:
                     self.last_rep_time = current_time
             
             # Display rep count
+            if not OPENCV_AVAILABLE:
+                return
             cv2.putText(frame, f'Push-ups: {self.rep_count}', (10, 30), 
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
@@ -323,6 +339,8 @@ class FitnessCoach:
             )
             
             # Display squat angle
+            if not OPENCV_AVAILABLE:
+                return
             cv2.putText(frame, f'Squat Angle: {int(left_angle)}', (10, 70), 
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
             
@@ -369,7 +387,7 @@ class FitnessCoach:
     def capture_frames(self):
         """Capture frames for pose analysis"""
         try:
-            if not self.camera_service or not self.is_running:
+            if not OPENCV_AVAILABLE or (not self.camera_service or not self.is_running):
                 return None
             
             # Get latest frame
@@ -390,6 +408,8 @@ class FitnessCoach:
                 return None
             
             # Convert to RGB for display
+            if not OPENCV_AVAILABLE:
+                return None
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
             # Add exercise tracking overlay
@@ -480,9 +500,12 @@ def show_ai_analysis_page():
     
     with col1:
         if st.button("📷 Start Camera", use_container_width=True):
-            if st.session_state.fitness_coach.start_camera():
-                st.session_state.camera_started = True
-                st.rerun()
+            if not OPENCV_AVAILABLE:
+                st.warning("Live camera is not available on this platform (likely Streamlit Cloud). Try uploading a photo below.")
+            else:
+                if st.session_state.fitness_coach.start_camera():
+                    st.session_state.camera_started = True
+                    st.rerun()
     
     with col2:
         if st.button("⏹️ Stop Camera", use_container_width=True):
@@ -492,7 +515,10 @@ def show_ai_analysis_page():
     
     with col3:
         if st.button("🧪 Test Camera", use_container_width=True):
-            st.session_state.fitness_coach.test_camera_access()
+            if not OPENCV_AVAILABLE:
+                st.warning("Camera test is not available on this platform.")
+            else:
+                st.session_state.fitness_coach.test_camera_access()
     
     # Performance mode controls
     st.subheader("Performance Mode")
@@ -539,7 +565,7 @@ def show_ai_analysis_page():
         """)
     
     # Camera feed
-    if st.session_state.camera_started:
+    if OPENCV_AVAILABLE and st.session_state.camera_started:
         st.subheader("Live Camera Feed")
         
         # Camera placeholder
@@ -563,7 +589,20 @@ def show_ai_analysis_page():
                     camera_placeholder.image(processed_frame, channels="RGB", use_column_width=True)
     
     else:
-        st.info("Click 'Start Camera' to begin AI analysis")
+        # Cloud-safe input
+        st.info("Live camera not available here. Upload a snapshot to analyze.")
+        uploaded = st.file_uploader("Upload an image (jpg/png)")
+        if uploaded is not None and OPENCV_AVAILABLE:
+            file_bytes = uploaded.read()
+            import numpy as _np
+            img_arr = _np.frombuffer(file_bytes, dtype=_np.uint8)
+            img = cv2.imdecode(img_arr, cv2.IMREAD_COLOR)
+            if img is not None:
+                processed = st.session_state.fitness_coach.process_frame(img)
+                if processed is not None:
+                    st.image(processed, channels="RGB", use_column_width=True)
+        elif uploaded is not None and not OPENCV_AVAILABLE:
+            st.warning("OpenCV not available; image processing is disabled in this environment.")
     
     # AI Analysis Results
     if st.session_state.analysis_results:
