@@ -1,0 +1,12 @@
+opencv-contrib-python==4.8.1.78
+mediapipe==0.10.7
+numpy==1.24.3
+pandas==2.0.3
+streamlit==1.28.1
+plotly==5.17.0
+matplotlib==3.7.2
+seaborn==0.12.2
+# Performance optimization packages
+opencv-python-headless==4.8.1.78  # Alternative for better performance
+pillow==10.0.1  # Better image processing
+psutil==5.9.6  # System monitoring for performance 
