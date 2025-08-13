@@ -165,10 +165,7 @@ def check_dependencies():
         'opencv-contrib-python': 'cv2',
         'mediapipe': 'mediapipe',
         'numpy': 'numpy',
-        'pandas': 'pandas',
-        'matplotlib': 'matplotlib',
-        'seaborn': 'seaborn',
-        'plotly': 'plotly'
+        'pandas': 'pandas'
     }
     
     missing_packages = []

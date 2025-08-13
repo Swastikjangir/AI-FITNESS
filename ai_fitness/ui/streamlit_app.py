@@ -40,8 +40,6 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import os
-import plotly.express as px
-import plotly.graph_objects as go
 import threading
 import time
 import queue
