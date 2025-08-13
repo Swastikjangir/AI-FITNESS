@@ -1,20 +1,17 @@
 """
 Camera service module for AI Fitness Coach.
 
-This module provides camera functionality for real-time pose detection,
-workout form analysis, and video capture capabilities with performance optimizations.
+This module provides camera functionality for real-time video streaming
+with performance optimizations.
 """
 
 import cv2
 import numpy as np
-from typing import Optional, Tuple, Callable, Dict, Any
+from typing import Optional, Callable, Dict, Any
 import threading
 import time
-from pathlib import Path
-import os
 import queue
 from concurrent.futures import ThreadPoolExecutor
-import mediapipe as mp
 
 from ai_fitness.config.settings import get_settings
 
@@ -25,10 +22,8 @@ class OptimizedCameraService:
         self.settings = get_settings()
         self.camera_index = camera_index or self.settings.camera_index
         self.camera = None
-        self.is_recording = False
         self.is_streaming = False
         self.frame_callback = None
-        self.recording_thread = None
         self.streaming_thread = None
         
         # Performance optimization settings
@@ -41,19 +36,15 @@ class OptimizedCameraService:
         self.last_processed_time = 0
         self.min_processing_interval = 1.0 / 15  # Max 15 FPS processing
         
-        # Threading and queuing
-        self.frame_queue = queue.Queue(maxsize=3)  # Small buffer to prevent lag
-        self.processed_frame_queue = queue.Queue(maxsize=2)
+        # Threading and queuing for smooth streaming
+        self.frame_queue = queue.Queue(maxsize=5)  # Buffer for smooth streaming
+        self.latest_frame = None
         self.executor = ThreadPoolExecutor(max_workers=2)
         
         # Camera properties
         self.width = self.settings.camera_width
         self.height = self.settings.camera_height
         self.fps = self.settings.camera_fps
-        
-        # Recording settings
-        self.output_dir = self.settings.data_dir / "recordings"
-        self.output_dir.mkdir(parents=True, exist_ok=True)
         
     def _setup_performance_mode(self):
         """Configure performance settings based on mode"""
@@ -125,7 +116,7 @@ class OptimizedCameraService:
     def capture_frame(self) -> Optional[np.ndarray]:
         """Capture a single frame from camera with error handling"""
         if not self.camera or not self.camera.isOpened():
-            print("Camera not initialized")
+            print("Camera not initialized or not opened")
             return None
         
         try:
@@ -136,6 +127,7 @@ class OptimizedCameraService:
                     frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_NEAREST)
                 return frame
             else:
+                print("Failed to capture frame from camera")
                 return None
         except Exception as e:
             print(f"Error capturing frame: {str(e)}")
@@ -146,6 +138,11 @@ class OptimizedCameraService:
         if self.is_streaming:
             print("Streaming already active")
             return
+        
+        if not self.camera or not self.camera.isOpened():
+            if not self.initialize_camera():
+                print("Failed to initialize camera for streaming")
+                return
         
         self.frame_callback = callback
         self.is_streaming = True
@@ -163,6 +160,7 @@ class OptimizedCameraService:
     
     def _optimized_stream_loop(self):
         """Optimized streaming loop with frame skipping and async processing"""
+        print("Starting optimized stream loop")
         while self.is_streaming:
             try:
                 frame = self.capture_frame()
@@ -182,9 +180,19 @@ class OptimizedCameraService:
                     time.sleep(0.001)  # Micro-sleep
                     continue
                 
+                # Update latest frame (non-blocking)
+                self.latest_frame = frame.copy()
+                
                 # Update frame queue (non-blocking)
                 if not self.frame_queue.full():
                     self.frame_queue.put(frame)
+                else:
+                    # Remove old frame and add new one
+                    try:
+                        self.frame_queue.get_nowait()
+                        self.frame_queue.put(frame)
+                    except queue.Empty:
+                        pass
                 
                 # Process frame asynchronously if callback provided
                 if self.frame_callback:
@@ -193,9 +201,15 @@ class OptimizedCameraService:
                 self.frame_count += 1
                 self.last_processed_time = current_time
                 
+                # Debug: print frame count every 30 frames
+                if self.frame_count % 30 == 0:
+                    print(f"Streaming: processed {self.frame_count} frames")
+                
             except Exception as e:
                 print(f"Error in streaming loop: {str(e)}")
                 time.sleep(0.01)
+        
+        print("Streaming loop ended")
     
     def _process_frame_async(self, frame):
         """Process frame asynchronously to avoid blocking the main stream"""
@@ -207,21 +221,15 @@ class OptimizedCameraService:
     
     def get_latest_frame(self) -> Optional[np.ndarray]:
         """Get the most recent frame without blocking"""
-        try:
-            if not self.frame_queue.empty():
-                return self.frame_queue.get_nowait()
-            return None
-        except queue.Empty:
+        if self.latest_frame is not None:
+            return self.latest_frame
+        else:
+            print("No latest frame available")
             return None
     
-    def get_processed_frame(self) -> Optional[np.ndarray]:
-        """Get the most recent processed frame"""
-        try:
-            if not self.processed_frame_queue.empty():
-                return self.processed_frame_queue.get_nowait()
-            return None
-        except queue.Empty:
-            return None
+    def is_camera_available(self) -> bool:
+        """Check if camera is available and working"""
+        return self.camera is not None and self.camera.isOpened()
     
     def set_performance_mode(self, mode: str):
         """Change performance mode on the fly"""
@@ -241,94 +249,9 @@ class OptimizedCameraService:
             'frame_skip': self.frame_skip,
             'processing_interval': self.min_processing_interval,
             'queue_size': self.frame_queue.qsize(),
-            'is_streaming': self.is_streaming
+            'is_streaming': self.is_streaming,
+            'camera_available': self.is_camera_available()
         }
-    
-    def start_recording(self, filename: str = None) -> bool:
-        """Start video recording with performance optimizations"""
-        if self.is_recording:
-            print("Recording already active")
-            return False
-        
-        if filename is None:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"workout_recording_{timestamp}.mp4"
-        
-        output_path = self.output_dir / filename
-        
-        # Initialize video writer with performance codec
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        self.video_writer = cv2.VideoWriter(
-            str(output_path), fourcc, self.fps, (self.width, self.height)
-        )
-        
-        if not self.video_writer.isOpened():
-            print("Failed to initialize video writer")
-            return False
-        
-        self.is_recording = True
-        self.recording_thread = threading.Thread(target=self._recording_loop)
-        self.recording_thread.daemon = True
-        self.recording_thread.start()
-        
-        print(f"Recording started: {filename}")
-        return True
-    
-    def stop_recording(self):
-        """Stop video recording"""
-        if not self.is_recording:
-            print("No recording active")
-            return
-        
-        self.is_recording = False
-        if self.recording_thread:
-            self.recording_thread.join(timeout=1.0)
-        
-        if hasattr(self, 'video_writer'):
-            self.video_writer.release()
-            print("Recording stopped")
-    
-    def _recording_loop(self):
-        """Optimized recording loop"""
-        while self.is_recording:
-            try:
-                frame = self.capture_frame()
-                if frame is not None:
-                    self.video_writer.write(frame)
-                
-                # Control recording frame rate
-                time.sleep(1.0 / self.fps)
-            except Exception as e:
-                print(f"Error in recording loop: {str(e)}")
-                time.sleep(0.01)
-    
-    def take_photo(self, filename: str = None) -> Optional[str]:
-        """Take a single photo"""
-        if not self.camera or not self.camera.isOpened():
-            print("Camera not initialized")
-            return None
-        
-        frame = self.capture_frame()
-        if frame is None:
-            return None
-        
-        if filename is None:
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"photo_{timestamp}.jpg"
-        
-        output_path = self.output_dir / filename
-        
-        # Ensure output directory exists
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
-        # Save photo
-        success = cv2.imwrite(str(output_path), frame)
-        if success:
-            print(f"Photo saved: {filename}")
-            return str(output_path)
-        else:
-            print("Failed to save photo")
-            return None
     
     def get_camera_info(self) -> Dict[str, Any]:
         """Get camera information and capabilities"""
@@ -340,12 +263,6 @@ class OptimizedCameraService:
             'width': int(self.camera.get(cv2.CAP_PROP_FRAME_WIDTH)),
             'height': int(self.camera.get(cv2.CAP_PROP_FRAME_HEIGHT)),
             'fps': self.camera.get(cv2.CAP_PROP_FPS),
-            'brightness': self.camera.get(cv2.CAP_PROP_BRIGHTNESS),
-            'contrast': self.camera.get(cv2.CAP_PROP_CONTRAST),
-            'saturation': self.camera.get(cv2.CAP_PROP_SATURATION),
-            'hue': self.camera.get(cv2.CAP_PROP_HUE),
-            'gain': self.camera.get(cv2.CAP_PROP_GAIN),
-            'exposure': self.camera.get(cv2.CAP_PROP_EXPOSURE),
             'performance_mode': self.performance_mode,
             'frame_skip': self.frame_skip,
             'processing_interval': self.min_processing_interval
@@ -353,88 +270,117 @@ class OptimizedCameraService:
         
         return info
     
-    def set_camera_property(self, property_id: int, value: float) -> bool:
-        """Set camera property"""
+    def stream_frames_streamlit(self, st_placeholder, stop_flag=None, max_fps=30):
+        """
+        Stream video frames to Streamlit placeholder in real-time.
+        
+        Args:
+            st_placeholder: Streamlit placeholder for displaying images
+            stop_flag: Optional threading.Event() to signal stopping
+            max_fps: Maximum frames per second (default: 30)
+        """
         if not self.camera or not self.camera.isOpened():
+            print("Camera not initialized for streaming")
             return False
         
-        return self.camera.set(property_id, value)
-    
-    def get_camera_property(self, property_id: int) -> float:
-        """Get camera property value"""
-        if not self.camera or not self.camera.isOpened():
-            return 0.0
+        # Calculate delay based on max_fps
+        frame_delay = 1.0 / max_fps
         
-        return self.camera.get(property_id)
-    
-    def list_available_cameras(self) -> list:
-        """List available camera devices"""
-        available_cameras = []
+        # Initialize camera if not already streaming
+        if not self.is_streaming:
+            self.start_streaming()
         
-        for i in range(10):  # Check first 10 indices
-            cap = cv2.VideoCapture(i)
-            if cap.isOpened():
-                available_cameras.append(i)
-                cap.release()
+        print(f"Starting Streamlit video stream with {max_fps} FPS")
         
-        return available_cameras
-    
-    def switch_camera(self, new_camera_index: int) -> bool:
-        """Switch to a different camera"""
-        if self.is_streaming or self.is_recording:
-            print("Cannot switch camera while streaming or recording")
+        try:
+            while True:
+                # Check stop flag
+                if stop_flag and stop_flag.is_set():
+                    print("Streamlit streaming stopped by flag")
+                    break
+                
+                # Capture frame
+                frame = self.capture_frame()
+                if frame is None:
+                    time.sleep(0.01)
+                    continue
+                
+                # Convert BGR to RGB for Streamlit
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Display in Streamlit placeholder
+                st_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+                
+                # Small delay to prevent CPU overload
+                time.sleep(frame_delay)
+                
+        except Exception as e:
+            print(f"Error in Streamlit streaming: {str(e)}")
             return False
         
-        # Release current camera
-        self.release_camera()
-        
-        # Initialize new camera
-        self.camera_index = new_camera_index
-        return self.initialize_camera()
+        print("Streamlit video stream ended")
+        return True
     
-    def apply_filters(self, frame: np.ndarray, filter_type: str = 'none') -> np.ndarray:
-        """Apply various filters to the frame"""
-        if filter_type == 'none':
-            return frame
-        elif filter_type == 'grayscale':
-            return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        elif filter_type == 'blur':
-            return cv2.GaussianBlur(frame, (15, 15), 0)
-        elif filter_type == 'edge_detection':
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            return cv2.Canny(gray, 100, 200)
-        elif filter_type == 'sepia':
-            # Apply sepia filter
-            frame_float = frame.astype(np.float32)
-            sepia_matrix = np.array([
-                [0.393, 0.769, 0.189],
-                [0.349, 0.686, 0.168],
-                [0.272, 0.534, 0.131]
-            ])
-            sepia_frame = cv2.transform(frame_float, sepia_matrix)
-            sepia_frame = np.clip(sepia_frame, 0, 255).astype(np.uint8)
-            return sepia_frame
-        else:
-            print(f"Unknown filter type: {filter_type}")
-            return frame
-    
-    def draw_overlay(self, frame: np.ndarray, text: str, position: Tuple[int, int] = (10, 30)) -> np.ndarray:
-        """Draw text overlay on frame"""
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.7
-        color = (255, 255, 255)  # White
-        thickness = 2
+    def stream_frames_streamlit_with_processing(self, st_placeholder, processing_callback=None, stop_flag=None, max_fps=30):
+        """
+        Stream video frames to Streamlit with optional processing callback.
         
-        # Add black background for better visibility
-        (text_width, text_height), baseline = cv2.getTextSize(text, font, font_scale, thickness)
-        cv2.rectangle(frame, 
-                     (position[0] - 5, position[1] - text_height - 5),
-                     (position[0] + text_width + 5, position[1] + baseline + 5),
-                     (0, 0, 0), -1)
+        Args:
+            st_placeholder: Streamlit placeholder for displaying images
+            processing_callback: Optional callback function(frame) -> processed_frame
+            stop_flag: Optional threading.Event() to signal stopping
+            max_fps: Maximum frames per second (default: 30)
+        """
+        if not self.camera or not self.camera.isOpened():
+            print("Camera not initialized for streaming")
+            return False
         
-        # Draw text
-        cv2.putText(frame, text, position, font, font_scale, color, thickness)
-        return frame
+        # Calculate delay based on max_fps
+        frame_delay = 1.0 / max_fps
+        
+        # Initialize camera if not already streaming
+        if not self.is_streaming:
+            self.start_streaming()
+        
+        print(f"Starting Streamlit video stream with processing at {max_fps} FPS")
+        
+        try:
+            while True:
+                # Check stop flag
+                if stop_flag and stop_flag.is_set():
+                    print("Streamlit streaming stopped by flag")
+                    break
+                
+                # Capture frame
+                frame = self.capture_frame()
+                if frame is None:
+                    time.sleep(0.01)
+                    continue
+                
+                # Apply processing callback if provided
+                if processing_callback:
+                    try:
+                        processed_frame = processing_callback(frame)
+                        if processed_frame is not None:
+                            frame = processed_frame
+                    except Exception as e:
+                        print(f"Error in processing callback: {str(e)}")
+                
+                # Convert BGR to RGB for Streamlit
+                frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Display in Streamlit placeholder
+                st_placeholder.image(frame_rgb, channels="RGB", use_container_width=True)
+                
+                # Small delay to prevent CPU overload
+                time.sleep(frame_delay)
+                
+        except Exception as e:
+            print(f"Error in Streamlit streaming with processing: {str(e)}")
+            return False
+        
+        print("Streamlit video stream with processing ended")
+        return True
     
     def __enter__(self):
         """Context manager entry"""
@@ -455,15 +401,6 @@ class CameraService(OptimizedCameraService):
 if __name__ == "__main__":
     # Example usage
     with CameraService() as camera:
-        # Take a photo
-        photo_path = camera.take_photo()
-        if photo_path:
-            print(f"Photo taken: {photo_path}")
-        
         # Get camera info
         info = camera.get_camera_info()
         print("Camera info:", info)
-        
-        # List available cameras
-        available = camera.list_available_cameras()
-        print(f"Available cameras: {available}")

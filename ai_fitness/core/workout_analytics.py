@@ -1,16 +1,12 @@
 """
 Workout Analytics module for AI Fitness Coach.
 
-This module provides comprehensive workout tracking, analysis, and
-visualization capabilities for fitness progress monitoring.
+This module provides workout tracking and data management capabilities.
 """
 
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
 from datetime import datetime, timedelta
 import os
-from pathlib import Path
 
 from ai_fitness.config.settings import get_settings
 
@@ -27,8 +23,10 @@ class WorkoutAnalytics:
         """Load workout data from CSV"""
         if os.path.exists(self.log_file):
             self.df = pd.read_csv(self.log_file)
-            self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
-            self.df['date'] = self.df['timestamp'].dt.date
+            # Ensure timestamp is properly formatted
+            if 'timestamp' in self.df.columns:
+                self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
+                self.df['date'] = self.df['timestamp'].dt.date
             return self.df
         else:
             print(f"No workout data found at {self.log_file}")
@@ -40,6 +38,14 @@ class WorkoutAnalytics:
         if self.df is None or self.df.empty:
             return pd.DataFrame()
         
+        # Check if date column exists, if not create it from timestamp
+        if 'date' not in self.df.columns and 'timestamp' in self.df.columns:
+            self.df['date'] = pd.to_datetime(self.df['timestamp']).dt.date
+        
+        # If still no date column, return empty DataFrame
+        if 'date' not in self.df.columns:
+            return pd.DataFrame()
+        
         daily_summary = self.df.groupby(['date', 'exercise'])['count'].sum().reset_index()
         return daily_summary
     
@@ -48,101 +54,127 @@ class WorkoutAnalytics:
         if self.df is None or self.df.empty:
             return pd.DataFrame()
         
+        # Check if timestamp column exists
+        if 'timestamp' not in self.df.columns:
+            return pd.DataFrame()
+        
+        # Create date column if it doesn't exist
+        if 'date' not in self.df.columns:
+            self.df['date'] = pd.to_datetime(self.df['timestamp']).dt.date
+        
         self.df['week'] = self.df['timestamp'].dt.isocalendar().week
         self.df['year'] = self.df['timestamp'].dt.year
         weekly_progress = self.df.groupby(['year', 'week', 'exercise'])['count'].sum().reset_index()
         return weekly_progress
     
-    def plot_daily_activity(self, save_path=None):
-        """Plot daily exercise activity"""
-        if self.df is None or self.df.empty:
-            print("No data to plot")
-            return
+    def save_workout_data(self, exercise: str, count: int, duration: int = 0, calories: int = 0):
+        """Save a single workout session to the database"""
+        from datetime import datetime
         
-        if save_path is None:
-            save_path = self.settings.logs_dir / "daily_activity.png"
+        workout_data = {
+            'timestamp': datetime.now(),
+            'exercise': exercise,
+            'count': count,
+            'duration': duration,
+            'calories': calories
+        }
         
-        daily_summary = self.get_daily_summary()
+        # Add to DataFrame
+        if self.df is None:
+            self.df = pd.DataFrame()
         
-        plt.figure(figsize=(12, 6))
-        for exercise in daily_summary['exercise'].unique():
-            exercise_data = daily_summary[daily_summary['exercise'] == exercise]
-            plt.plot(exercise_data['date'], exercise_data['count'], 
-                    marker='o', label=exercise.title(), linewidth=2)
+        # Convert to DataFrame and ensure timestamp is datetime
+        new_row = pd.DataFrame([workout_data])
+        new_row['timestamp'] = pd.to_datetime(new_row['timestamp'])
         
-        plt.title('Daily Exercise Activity', fontsize=16, fontweight='bold')
-        plt.xlabel('Date', fontsize=12)
-        plt.ylabel('Reps Count', fontsize=12)
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.xticks(rotation=45)
-        plt.tight_layout()
+        self.df = pd.concat([self.df, new_row], ignore_index=True)
         
-        # Create logs directory if it doesn't exist
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
-    
-    def plot_exercise_comparison(self, save_path=None):
-        """Plot comparison between different exercises"""
-        if self.df is None or self.df.empty:
-            print("No data to plot")
-            return
+        # Ensure timestamp column is datetime
+        if 'timestamp' in self.df.columns:
+            self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
         
-        if save_path is None:
-            save_path = self.settings.logs_dir / "exercise_comparison.png"
+        # Save to CSV
+        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+        self.df.to_csv(self.log_file, index=False)
         
-        exercise_totals = self.df.groupby('exercise')['count'].sum().reset_index()
+        print(f"Workout data saved: {exercise} - {count} reps")
+        return workout_data
+
+    def get_workout_summary(self, pushup_count: int, squat_count: int, duration: int):
+        """Get a summary of the current workout session"""
+        total_reps = pushup_count + squat_count
+        total_calories = (pushup_count * 0.5) + (squat_count * 0.3)
         
-        plt.figure(figsize=(10, 6))
-        colors = ['#FF6B6B', '#4ECDC4', '#45B7D1']
-        bars = plt.bar(exercise_totals['exercise'], exercise_totals['count'], 
-                      color=colors[:len(exercise_totals)], alpha=0.8)
+        summary = {
+            'total_reps': total_reps,
+            'push_ups': pushup_count,
+            'squats': squat_count,
+            'duration_seconds': duration,
+            'duration_minutes': round(duration / 60, 1),
+            'total_calories': round(total_calories, 1),
+            'pushup_calories': round(pushup_count * 0.5, 1),
+            'squat_calories': round(squat_count * 0.3, 1),
+            'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        }
         
-        # Add value labels on bars
-        for bar in bars:
-            height = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width()/2., height + 0.1,
-                    f'{int(height)}', ha='center', va='bottom', fontweight='bold')
+        return summary
+
+    def create_sample_workout_data(self):
+        """Create sample workout data for testing and demonstration"""
+        from datetime import datetime, timedelta
+        import random
         
-        plt.title('Total Exercise Performance', fontsize=16, fontweight='bold')
-        plt.xlabel('Exercise Type', fontsize=12)
-        plt.ylabel('Total Reps', fontsize=12)
-        plt.grid(True, alpha=0.3, axis='y')
-        plt.tight_layout()
+        # Generate sample data for the last 30 days
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=30)
         
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
-    
-    def plot_weekly_trends(self, save_path=None):
-        """Plot weekly trends"""
-        if self.df is None or self.df.empty:
-            print("No data to plot")
-            return
+        # Sample exercises
+        exercises = ['push_ups', 'squats', 'pull_ups', 'lunges', 'planks']
         
-        if save_path is None:
-            save_path = self.settings.logs_dir / "weekly_trends.png"
+        data = []
+        current_date = start_date
         
-        weekly_data = self.get_weekly_progress()
+        while current_date <= end_date:
+            # Randomly decide if there's a workout on this day (70% chance)
+            if random.random() < 0.7:
+                # Random number of exercises per day (1-3)
+                num_exercises = random.randint(1, 3)
+                selected_exercises = random.sample(exercises, num_exercises)
+                
+                for exercise in selected_exercises:
+                    # Random number of reps (5-50)
+                    reps = random.randint(5, 50)
+                    # Random time during the day
+                    workout_time = current_date.replace(
+                        hour=random.randint(6, 22),
+                        minute=random.randint(0, 59)
+                    )
+                    
+                    data.append({
+                        'timestamp': workout_time,
+                        'exercise': exercise,
+                        'count': reps,
+                        'duration': random.randint(30, 300),  # 30 seconds to 5 minutes
+                        'calories': random.randint(10, 100)
+                    })
+            
+            current_date += timedelta(days=1)
         
-        plt.figure(figsize=(14, 8))
-        for exercise in weekly_data['exercise'].unique():
-            exercise_data = weekly_data[weekly_data['exercise'] == exercise]
-            plt.plot(exercise_data['week'], exercise_data['count'], 
-                    marker='s', label=exercise.title(), linewidth=2)
+        # Create DataFrame
+        self.df = pd.DataFrame(data)
         
-        plt.title('Weekly Exercise Trends', fontsize=16, fontweight='bold')
-        plt.xlabel('Week Number', fontsize=12)
-        plt.ylabel('Total Reps per Week', fontsize=12)
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
+        # Ensure timestamp is properly formatted
+        if 'timestamp' in self.df.columns:
+            self.df['timestamp'] = pd.to_datetime(self.df['timestamp'])
+            self.df['date'] = self.df['timestamp'].dt.date
         
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
-    
+        # Save to CSV
+        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+        self.df.to_csv(self.log_file, index=False)
+        
+        print(f"Sample workout data created with {len(data)} records")
+        return self.df
+
     def generate_workout_report(self):
         """Generate a comprehensive workout report"""
         if self.df is None or self.df.empty:
@@ -182,37 +214,8 @@ class WorkoutAnalytics:
             print("  No recent activity")
         
         print("=" * 50)
-    
-    def create_heatmap(self, save_path=None):
-        """Create activity heatmap"""
-        if self.df is None or self.df.empty:
-            print("No data to plot")
-            return
-        
-        if save_path is None:
-            save_path = self.settings.logs_dir / "activity_heatmap.png"
-        
-        # Create pivot table for heatmap
-        self.df['weekday'] = self.df['timestamp'].dt.day_name()
-        heatmap_data = self.df.groupby(['weekday', 'exercise'])['count'].sum().unstack(fill_value=0)
-        
-        plt.figure(figsize=(12, 8))
-        sns.heatmap(heatmap_data, annot=True, fmt='g', cmap='YlOrRd', 
-                   cbar_kws={'label': 'Total Reps'})
-        plt.title('Weekly Activity Heatmap', fontsize=16, fontweight='bold')
-        plt.xlabel('Exercise Type', fontsize=12)
-        plt.ylabel('Day of Week', fontsize=12)
-        plt.tight_layout()
-        
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.show()
 
 if __name__ == "__main__":
     # Example usage
     analytics = WorkoutAnalytics()
     analytics.generate_workout_report()
-    analytics.plot_daily_activity()
-    analytics.plot_exercise_comparison()
-    analytics.plot_weekly_trends()
-    analytics.create_heatmap()

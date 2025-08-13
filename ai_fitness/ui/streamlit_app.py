@@ -131,8 +131,13 @@ class FitnessCoach:
         # Exercise tracking
         self.exercise_stage = "up"
         self.rep_count = 0
+        self.squat_count = 0
         self.last_rep_time = 0
         self.rep_cooldown = 1.0  # 1 second cooldown between reps
+        
+        # Workout session tracking
+        self.workout_start_time = None
+        self.workout_duration = 0
         
         # Performance monitoring
         self.frame_times = []
@@ -240,6 +245,14 @@ class FitnessCoach:
             
             # Start streaming with frame callback
             self.camera_service.start_streaming(callback=self._process_frame)
+            
+            # Start workout session
+            self.start_workout_session()
+            
+            # Clear previous analysis results
+            if hasattr(st, 'session_state') and 'analysis_results' in st.session_state:
+                st.session_state.analysis_results = None
+            
             st.success(f"Camera started successfully with {self.performance_mode} mode!")
             return True
             
@@ -359,10 +372,23 @@ class FitnessCoach:
                 [right_ankle.x, right_ankle.y]
             )
             
-            # Display squat angle
+            # Track squat state and count reps
+            current_time = time.time()
+            avg_angle = (left_angle + right_angle) / 2
+            
+            if avg_angle < 110:  # Squat down position
+                if self.exercise_stage == "up":
+                    self.exercise_stage = "down"
+            elif avg_angle > 160:  # Standing position
+                if self.exercise_stage == "down" and (current_time - self.last_rep_time) > self.rep_cooldown:
+                    self.exercise_stage = "up"
+                    self.squat_count += 1
+                    self.last_rep_time = current_time
+            
+            # Display squat count
             if not OPENCV_AVAILABLE:
                 return
-            cv2.putText(frame, f'Squat Angle: {int(left_angle)}', (10, 70), 
+            cv2.putText(frame, f'Squats: {self.squat_count}', (10, 70), 
                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
             
         except Exception as e:
@@ -372,16 +398,17 @@ class FitnessCoach:
         """Test camera access without starting full stream"""
         try:
             if self.camera_service is None:
+                from ai_fitness.services.camera_service import CameraService
                 self.camera_service = CameraService()
             
             if self.camera_service.initialize_camera():
-                # Take a test photo
-                test_photo = self.camera_service.take_photo("test_camera_access.jpg")
-                if test_photo:
-                    st.success("Camera access test successful!")
+                # Test frame capture instead of photo
+                test_frame = self.camera_service.capture_frame()
+                if test_frame is not None:
+                    st.success("Camera access test successful! Camera is working properly.")
                     return True
                 else:
-                    st.error("Camera access test failed - could not capture image")
+                    st.error("Camera access test failed - could not capture frame")
                     return False
             else:
                 st.error("Camera access test failed - could not initialize camera")
@@ -411,10 +438,9 @@ class FitnessCoach:
             if not OPENCV_AVAILABLE or (not self.camera_service or not self.is_running):
                 return None
             
-            # Get latest frame
-            if not self.frame_queue.empty():
-                frame = self.frame_queue.get()
-                return frame
+            # Get latest frame from camera service
+            if self.camera_service:
+                return self.camera_service.get_latest_frame()
             
             return None
             
@@ -434,15 +460,58 @@ class FitnessCoach:
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
             # Add exercise tracking overlay
-            if self.rep_count > 0:
-                cv2.putText(frame_rgb, f'Total Reps: {self.rep_count}', (10, 110), 
+            if self.rep_count > 0 or self.squat_count > 0:
+                cv2.putText(frame_rgb, f'Push-ups: {self.rep_count}', (10, 110), 
                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                cv2.putText(frame_rgb, f'Squats: {self.squat_count}', (10, 150), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
             
             return frame_rgb
             
         except Exception as e:
             print(f"Error processing frame: {str(e)}")
             return None
+    
+    def reset_workout(self):
+        """Reset workout counters and state"""
+        self.rep_count = 0
+        self.squat_count = 0
+        self.exercise_stage = "up"
+        self.last_rep_time = 0
+        self.workout_start_time = None
+        self.workout_duration = 0
+        print("Workout counters reset")
+    
+    def start_workout_session(self):
+        """Start a new workout session"""
+        self.workout_start_time = time.time()
+        print("Workout session started")
+    
+    def end_workout_session(self):
+        """End the current workout session and calculate duration"""
+        if self.workout_start_time:
+            self.workout_duration = time.time() - self.workout_start_time
+            print(f"Workout session ended. Duration: {self.workout_duration:.1f} seconds")
+            return self.workout_duration
+        return 0
+    
+    def get_current_workout_duration(self):
+        """Get the current workout duration in seconds"""
+        if self.workout_start_time:
+            return time.time() - self.workout_start_time
+        return 0
+    
+    def get_workout_status(self):
+        """Get current workout status summary"""
+        return {
+            'is_running': self.is_running,
+            'pushup_count': self.rep_count,
+            'squat_count': self.squat_count,
+            'total_reps': self.rep_count + self.squat_count,
+            'duration': self.get_current_workout_duration(),
+            'exercise_stage': self.exercise_stage,
+            'performance_mode': self.performance_mode
+        }
 
 def main():
     """Main Streamlit application"""
@@ -482,16 +551,59 @@ def show_home_page():
     """Display the home page with overview and quick actions"""
     st.header("Welcome to AI Fitness Coach! 🚀")
     
+    # Real-time workout status
+    if st.session_state.fitness_coach.is_running:
+        st.success("🔥 **LIVE WORKOUT IN PROGRESS**")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Push-ups", f"{st.session_state.fitness_coach.rep_count}", delta="Live")
+        
+        with col2:
+            st.metric("Squats", f"{st.session_state.fitness_coach.squat_count}", delta="Live")
+        
+        with col3:
+            current_duration = st.session_state.fitness_coach.get_current_workout_duration()
+            st.metric("Duration", f"{int(current_duration)}s", delta="Live")
+        
+        with col4:
+            total_reps = st.session_state.fitness_coach.rep_count + st.session_state.fitness_coach.squat_count
+            st.metric("Total Reps", total_reps, delta="Live")
+        
+        # Quick workout actions
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔍 Analyze Current Workout", use_container_width=True, type="primary"):
+                st.rerun()
+        
+        with col2:
+            if st.button("⏹️ Stop Workout", use_container_width=True):
+                st.session_state.fitness_coach.stop_camera()
+                st.session_state.camera_started = False
+                st.rerun()
+    
+    # General metrics
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("AI Analysis", "Ready", delta="Active")
+        if st.session_state.fitness_coach.workout_analytics.df is not None and not st.session_state.fitness_coach.workout_analytics.df.empty:
+            total_sessions = len(st.session_state.fitness_coach.workout_analytics.df['date'].unique())
+            st.metric("Total Sessions", total_sessions, delta="+1" if st.session_state.fitness_coach.is_running else None)
+        else:
+            st.metric("Total Sessions", "0", delta="Start Today!")
     
     with col2:
-        st.metric("Workout Tracking", "Active", delta="+5 reps")
+        if st.session_state.fitness_coach.workout_analytics.df is not None and not st.session_state.fitness_coach.workout_analytics.df.empty:
+            total_reps = st.session_state.fitness_coach.workout_analytics.df['count'].sum()
+            st.metric("Total Reps", total_reps, delta="+1" if st.session_state.fitness_coach.is_running else None)
+        else:
+            st.metric("Total Reps", "0", delta="Start Today!")
     
     with col3:
-        st.metric("Progress", "On Track", delta="+2.5%")
+        if st.session_state.fitness_coach.is_running:
+            st.metric("Status", "Active", delta="Live")
+        else:
+            st.metric("Status", "Ready", delta="Start Workout")
     
     # Quick actions
     st.subheader("Quick Actions")
@@ -510,7 +622,12 @@ def show_home_page():
     
     # Recent activity
     st.subheader("Recent Activity")
-    st.info("No recent workouts. Start your fitness journey today!")
+    if st.session_state.fitness_coach.workout_analytics.df is not None and not st.session_state.fitness_coach.workout_analytics.df.empty:
+        recent_data = st.session_state.fitness_coach.workout_analytics.df.tail(5)
+        for _, row in recent_data.iterrows():
+            st.info(f"✅ {row['exercise'].title()}: {row['count']} reps on {row['timestamp']}")
+    else:
+        st.info("No recent workouts. Start your fitness journey today!")
 
 def show_ai_analysis_page():
     """Display the AI analysis page with camera and pose detection"""
@@ -593,21 +710,118 @@ def show_ai_analysis_page():
         camera_placeholder = st.empty()
         
         # Exercise tracking display
-        col1, col2 = st.columns(2)
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             st.metric("Push-ups", f"{st.session_state.fitness_coach.rep_count}")
         
         with col2:
+            st.metric("Squats", f"{st.session_state.fitness_coach.squat_count}")
+        
+        with col3:
             st.metric("Exercise Stage", st.session_state.fitness_coach.exercise_stage.title())
         
-        # Real-time frame processing
+        with col4:
+            current_duration = st.session_state.fitness_coach.get_current_workout_duration()
+            st.metric("Workout Time", f"{int(current_duration)}s")
+        
+        # Analysis button
+        col1, col2, col3 = st.columns(3)
+        with col2:
+            if st.button("🔍 Analyze Workout", use_container_width=True, type="primary"):
+                # Generate workout report based on current session
+                total_reps = st.session_state.fitness_coach.rep_count + st.session_state.fitness_coach.squat_count
+                if total_reps > 0:
+                    # End workout session and get duration
+                    duration = st.session_state.fitness_coach.end_workout_session()
+                    
+                    # Save workout data for both exercises
+                    workout_data_list = []
+                    
+                    if st.session_state.fitness_coach.rep_count > 0:
+                        pushup_data = st.session_state.fitness_coach.workout_analytics.save_workout_data(
+                            exercise='push_ups',
+                            count=st.session_state.fitness_coach.rep_count,
+                            duration=int(duration),
+                            calories=st.session_state.fitness_coach.rep_count * 0.5
+                        )
+                        workout_data_list.append(pushup_data)
+                    
+                    if st.session_state.fitness_coach.squat_count > 0:
+                        squat_data = st.session_state.fitness_coach.workout_analytics.save_workout_data(
+                            exercise='squats',
+                            count=st.session_state.fitness_coach.squat_count,
+                            duration=int(duration),
+                            calories=st.session_state.fitness_coach.squat_count * 0.3
+                        )
+                        workout_data_list.append(squat_data)
+                    
+                    # Get workout summary
+                    workout_summary = st.session_state.fitness_coach.workout_analytics.get_workout_summary(
+                        st.session_state.fitness_coach.rep_count,
+                        st.session_state.fitness_coach.squat_count,
+                        int(duration)
+                    )
+                    
+                    st.success(f"Workout analyzed! {st.session_state.fitness_coach.rep_count} push-ups and {st.session_state.fitness_coach.squat_count} squats in {workout_summary['duration_minutes']} minutes recorded.")
+                    st.session_state.analysis_results = workout_summary
+                else:
+                    st.warning("No workout data to analyze. Please perform some exercises first.")
+        
+        # Reset button
+        with col3:
+            if st.button("🔄 Reset Counter", use_container_width=True):
+                st.session_state.fitness_coach.reset_workout()
+                # Clear analysis results
+                st.session_state.analysis_results = None
+                st.success("Workout counter reset!")
+                st.rerun()
+        
+        # Real-time video streaming using Streamlit's rerun mechanism
         if st.session_state.fitness_coach.is_running:
-            frame = st.session_state.fitness_coach.capture_frames()
-            if frame is not None:
-                processed_frame = st.session_state.fitness_coach.process_frame(frame)
-                if processed_frame is not None:
-                    camera_placeholder.image(processed_frame, channels="RGB", use_column_width=True)
+            # Use the new streaming method for better performance
+            if not hasattr(st.session_state, 'streaming_thread') or not st.session_state.streaming_thread.is_alive():
+                # Create a processing callback for pose detection
+                def process_frame_with_pose(frame):
+                    """Process frame with pose detection and exercise tracking"""
+                    try:
+                        # Process pose detection
+                        st.session_state.fitness_coach._detect_pose(frame)
+                        
+                        # Add exercise tracking overlay
+                        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        if st.session_state.fitness_coach.rep_count > 0 or st.session_state.fitness_coach.squat_count > 0:
+                            cv2.putText(frame_rgb, f'Push-ups: {st.session_state.fitness_coach.rep_count}', (10, 110), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+                            cv2.putText(frame_rgb, f'Squats: {st.session_state.fitness_coach.squat_count}', (10, 150), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+                        
+                        return frame_rgb
+                    except Exception as e:
+                        print(f"Error in pose processing: {str(e)}")
+                        return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                
+                # Start streaming with pose processing
+                st.session_state.streaming_thread = threading.Thread(
+                    target=st.session_state.fitness_coach.camera_service.stream_frames_streamlit_with_processing,
+                    args=(camera_placeholder, process_frame_with_pose, None, 20)  # 20 FPS for smooth tracking
+                )
+                st.session_state.streaming_thread.daemon = True
+                st.session_state.streaming_thread.start()
+            
+            # Show streaming status
+            st.success("🎥 Video streaming with pose detection is active!")
+            
+            # Performance stats
+            if st.session_state.fitness_coach.camera_service:
+                stats = st.session_state.fitness_coach.camera_service.get_performance_stats()
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Mode", stats.get('performance_mode', 'N/A').title())
+                with col2:
+                    st.metric("Resolution", stats.get('resolution', 'N/A'))
+                with col3:
+                    st.metric("Target FPS", stats.get('target_fps', 'N/A'))
     
     else:
         # Cloud-safe input
@@ -621,46 +835,136 @@ def show_ai_analysis_page():
             if img is not None:
                 processed = st.session_state.fitness_coach.process_frame(img)
                 if processed is not None:
-                    st.image(processed, channels="RGB", use_column_width=True)
+                    st.image(processed, channels="RGB", use_container_width=True)
         elif uploaded is not None and not OPENCV_AVAILABLE:
             st.warning("OpenCV not available; image processing is disabled in this environment.")
     
     # AI Analysis Results
     if st.session_state.analysis_results:
-        st.subheader("Analysis Results")
-        st.json(st.session_state.analysis_results)
+        st.subheader("📊 Workout Analysis Results")
+        
+        # Display results in a nice format
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Total Reps", st.session_state.analysis_results['total_reps'])
+        
+        with col2:
+            st.metric("Duration", f"{st.session_state.analysis_results['duration_minutes']} min")
+        
+        with col3:
+            st.metric("Calories Burned", f"{st.session_state.analysis_results['total_calories']}")
+        
+        with col4:
+            st.metric("Timestamp", st.session_state.analysis_results['timestamp'])
+        
+        # Detailed breakdown
+        st.subheader("Exercise Breakdown")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.metric("Push-ups", f"{st.session_state.analysis_results['push_ups']} reps")
+            st.metric("Push-up Calories", f"{st.session_state.analysis_results['pushup_calories']}")
+        
+        with col2:
+            st.metric("Squats", f"{st.session_state.analysis_results['squats']} reps")
+            st.metric("Squat Calories", f"{st.session_state.analysis_results['squat_calories']}")
+        
+        # Raw data (collapsible)
+        with st.expander("📋 Raw Analysis Data"):
+            st.json(st.session_state.analysis_results)
 
 def show_workout_analytics_page():
     """Display workout analytics and progress tracking"""
     st.header("📊 Workout Analytics & Progress")
+    
+    # Current workout session summary
+    if st.session_state.fitness_coach.is_running:
+        st.subheader("🔥 Current Workout Session")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("Push-ups", f"{st.session_state.fitness_coach.rep_count}")
+        
+        with col2:
+            st.metric("Squats", f"{st.session_state.fitness_coach.squat_count}")
+        
+        with col3:
+            current_duration = st.session_state.fitness_coach.get_current_workout_duration()
+            st.metric("Duration", f"{int(current_duration)}s")
+        
+        with col4:
+            total_reps = st.session_state.fitness_coach.rep_count + st.session_state.fitness_coach.squat_count
+            st.metric("Total Reps", total_reps)
+        
+        # Quick actions for current session
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("🔍 Analyze Current Workout", use_container_width=True, type="primary"):
+                if total_reps > 0:
+                    # End workout session and get duration
+                    duration = st.session_state.fitness_coach.end_workout_session()
+                    
+                    # Save workout data for both exercises
+                    if st.session_state.fitness_coach.rep_count > 0:
+                        st.session_state.fitness_coach.workout_analytics.save_workout_data(
+                            exercise='push_ups',
+                            count=st.session_state.fitness_coach.rep_count,
+                            duration=int(duration),
+                            calories=st.session_state.fitness_coach.rep_count * 0.5
+                        )
+                    
+                    if st.session_state.fitness_coach.squat_count > 0:
+                        st.session_state.fitness_coach.workout_analytics.save_workout_data(
+                            exercise='squats',
+                            count=st.session_state.fitness_coach.squat_count,
+                            duration=int(duration),
+                            calories=st.session_state.fitness_coach.squat_count * 0.3
+                        )
+                    
+                    st.success(f"Workout saved! {st.session_state.fitness_coach.rep_count} push-ups and {st.session_state.fitness_coach.squat_count} squats recorded.")
+                    st.rerun()
+                else:
+                    st.warning("No exercises performed yet!")
+        
+        with col2:
+            if st.button("🔄 Reset Session", use_container_width=True):
+                st.session_state.fitness_coach.reset_workout()
+                st.success("Session reset!")
+                st.rerun()
     
     # Generate sample data if needed
     if st.button("📈 Generate Sample Data", use_container_width=True):
         st.session_state.fitness_coach.workout_analytics.create_sample_workout_data()
         st.success("Sample data generated!")
     
+    # Refresh data button
+    if st.button("🔄 Refresh Data", use_container_width=True):
+        st.session_state.fitness_coach.workout_analytics.load_data()
+        st.success("Data refreshed!")
+        st.rerun()
+    
     # Analytics tabs
-    tab1, tab2, tab3, tab4 = st.tabs(["📈 Daily Activity", "📊 Exercise Comparison", "📅 Weekly Trends", "🔥 Activity Heatmap"])
+    tab1, tab2 = st.tabs(["📊 Exercise Summary", "📈 Progress Data"])
     
     with tab1:
-        st.subheader("Daily Exercise Activity")
-        if st.button("Generate Daily Activity Chart"):
-            st.session_state.fitness_coach.workout_analytics.plot_daily_activity()
+        st.subheader("Exercise Summary")
+        if st.session_state.fitness_coach.workout_analytics.df is not None and not st.session_state.fitness_coach.workout_analytics.df.empty:
+            # Show exercise totals
+            exercise_totals = st.session_state.fitness_coach.workout_analytics.df.groupby('exercise')['count'].sum().reset_index()
+            st.dataframe(exercise_totals, use_container_width=True)
+        else:
+            st.info("No workout data available. Complete some workouts to see your summary!")
     
     with tab2:
-        st.subheader("Exercise Performance Comparison")
-        if st.button("Generate Exercise Comparison"):
-            st.session_state.fitness_coach.workout_analytics.plot_exercise_comparison()
-    
-    with tab3:
-        st.subheader("Weekly Exercise Trends")
-        if st.button("Generate Weekly Trends"):
-            st.session_state.fitness_coach.workout_analytics.plot_weekly_trends()
-    
-    with tab4:
-        st.subheader("Weekly Activity Heatmap")
-        if st.button("Generate Activity Heatmap"):
-            st.session_state.fitness_coach.workout_analytics.create_heatmap()
+        st.subheader("Progress Data")
+        if st.session_state.fitness_coach.workout_analytics.df is not None and not st.session_state.fitness_coach.workout_analytics.df.empty:
+            # Show recent daily data
+            daily_summary = st.session_state.fitness_coach.workout_analytics.get_daily_summary()
+            if not daily_summary.empty:
+                st.dataframe(daily_summary.tail(7), use_container_width=True)
+        else:
+            st.info("No progress data available. Complete some workouts to see your progress!")
     
     # Workout Report
     if st.button("📋 Generate Workout Report", use_container_width=True):
@@ -670,15 +974,134 @@ def show_workout_plans_page():
     """Display workout plans and recommendations"""
     st.header("🎯 Personalized Workout Plans")
     
-    st.info("AI-generated workout plans will appear here based on your analysis results.")
-    
-    # Placeholder for workout plans
-    st.subheader("Your Workout Plan")
-    st.write("Complete an AI analysis to get your personalized workout plan!")
+    # Check if user has workout data
+    if st.session_state.fitness_coach.workout_analytics.df is not None and not st.session_state.fitness_coach.workout_analytics.df.empty:
+        st.success("Great! We have workout data to create personalized plans.")
+        
+        # Get recent workout summary
+        recent_data = st.session_state.fitness_coach.workout_analytics.df.tail(10)
+        total_recent_reps = recent_data['count'].sum()
+        avg_reps_per_session = recent_data.groupby('exercise')['count'].mean()
+        
+        # Display current fitness level
+        st.subheader("📊 Your Current Fitness Level")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Recent Sessions", len(recent_data))
+        
+        with col2:
+            st.metric("Total Recent Reps", total_recent_reps)
+        
+        with col3:
+            st.metric("Exercises Tracked", len(avg_reps_per_session))
+        
+        # Personalized recommendations
+        st.subheader("🎯 Personalized Recommendations")
+        
+        if total_recent_reps < 50:
+            st.info("**Beginner Level** - Focus on building consistency and proper form")
+            st.markdown("""
+            **Recommended Workout Plan:**
+            - **Day 1**: 3 sets of 5-10 push-ups, 3 sets of 5-10 squats
+            - **Day 2**: Rest or light stretching
+            - **Day 3**: 3 sets of 5-10 lunges, 3 sets of 30-second planks
+            - **Day 4**: Rest
+            - **Day 5**: Repeat Day 1
+            - **Goal**: Build up to 20 reps per exercise
+            """)
+        
+        elif total_recent_reps < 150:
+            st.info("**Intermediate Level** - Time to increase intensity and variety")
+            st.markdown("""
+            **Recommended Workout Plan:**
+            - **Day 1**: 4 sets of 15-20 push-ups, 4 sets of 15-20 squats
+            - **Day 2**: 4 sets of 15-20 lunges, 4 sets of 60-second planks
+            - **Day 3**: Rest or active recovery (walking, stretching)
+            - **Day 4**: 4 sets of 15-20 burpees, 4 sets of 15-20 mountain climbers
+            - **Day 5**: Repeat Day 1
+            - **Goal**: Build up to 30 reps per exercise
+            """)
+        
+        else:
+            st.success("**Advanced Level** - Excellent progress! Time for challenging variations")
+            st.markdown("""
+            **Recommended Workout Plan:**
+            - **Day 1**: 5 sets of 25-30 push-ups, 5 sets of 25-30 squats
+            - **Day 2**: 5 sets of 25-30 lunges, 5 sets of 90-second planks
+            - **Day 3**: 5 sets of 25-30 burpees, 5 sets of 25-30 mountain climbers
+            - **Day 4**: Active recovery with yoga or swimming
+            - **Day 5**: High-intensity interval training (HIIT)
+            - **Goal**: Maintain high reps and add weight/resistance
+            """)
+        
+        # Progress tracking
+        st.subheader("📈 Progress Tracking")
+        if st.button("🔄 Update Progress Analysis"):
+            st.session_state.fitness_coach.workout_analytics.generate_workout_report()
+            st.success("Progress analysis updated!")
+        
+        # Exercise variety suggestions
+        st.subheader("💡 Try New Exercises")
+        st.markdown("""
+        **Based on your current routine, consider adding:**
+        - **Cardio**: Jumping jacks, high knees, mountain climbers
+        - **Strength**: Burpees, plank variations, wall sits
+        - **Flexibility**: Yoga poses, dynamic stretching
+        - **Balance**: Single-leg exercises, stability work
+        """)
+        
+    else:
+        st.info("Complete some AI analysis workouts to get your personalized workout plan!")
+        
+        # Placeholder for workout plans
+        st.subheader("Sample Workout Plan")
+        st.markdown("""
+        **Basic Fitness Routine (Complete this to unlock personalized plans):**
+        
+        **Week 1-2: Foundation Building**
+        - **Monday**: 3 sets of 5 push-ups, 3 sets of 5 squats
+        - **Wednesday**: 3 sets of 5 lunges, 3 sets of 30-second planks
+        - **Friday**: Repeat Monday's workout
+        - **Weekend**: Rest and recovery
+        
+        **Goal**: Complete at least 3 workouts this week to unlock personalized recommendations!
+        """)
+        
+        if st.button("🎯 Start Your Fitness Journey", use_container_width=True):
+            st.info("Navigate to '📷 AI Analysis' to begin your first workout session!")
 
 def show_settings_page():
     """Display application settings and configuration"""
     st.header("⚙️ Application Settings")
+    
+    # Current system status
+    st.subheader("🔍 System Status")
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("OpenCV Available", "✅ Yes" if OPENCV_AVAILABLE else "❌ No")
+    
+    with col2:
+        st.metric("MediaPipe Available", "✅ Yes" if MEDIAPIPE_AVAILABLE else "❌ No")
+    
+    with col3:
+        st.metric("Camera Status", "🟢 Active" if st.session_state.fitness_coach.is_running else "🔴 Inactive")
+    
+    # Current workout status
+    if st.session_state.fitness_coach.is_running:
+        st.subheader("🔥 Current Workout Status")
+        workout_status = st.session_state.fitness_coach.get_workout_status()
+        
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Push-ups", workout_status['pushup_count'])
+        with col2:
+            st.metric("Squats", workout_status['squat_count'])
+        with col3:
+            st.metric("Duration", f"{int(workout_status['duration'])}s")
+        with col4:
+            st.metric("Stage", workout_status['exercise_stage'].title())
     
     st.subheader("Camera Settings")
     col1, col2 = st.columns(2)
@@ -699,6 +1122,12 @@ def show_settings_page():
     
     if st.button("🔄 Reset to Defaults", use_container_width=True):
         st.success("Settings reset to defaults!")
+    
+    # Performance information
+    st.subheader("📊 Performance Information")
+    if st.button("📈 Show Performance Stats"):
+        stats = st.session_state.fitness_coach.get_performance_stats()
+        st.json(stats)
 
 if __name__ == "__main__":
     main()
